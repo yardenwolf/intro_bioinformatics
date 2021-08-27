@@ -1,0 +1,167 @@
+---
+title: "1st_dataset_markdown"
+author: "Yarden Wolf, Daniel Barak"
+date: "8/14/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+Loading the the first dataset:"RNA-seq of prostate cancer and adjacent normal tissues from 14 patients"
+
+
+```{r,  echo=TRUE, warning=FALSE, message=FALSE}
+#prepare dataset 2
+library(data.table)
+library("dplyr")
+library("readr")
+library ("pheatmap")
+library ("RColorBrewer")
+library("DESeq2")
+library("dplyr")
+library("magrittr")
+library("ggplot2")
+library("tidyverse")
+
+#preprocessing of dataset2, extracting only relevant columns
+
+setwd("C:/Users/yarde/Documents/Bio-Info-Project/second_dataset-ERP000550")
+
+raw_counts <- fread(file = './E-MTAB-567-raw-counts.tsv', stringsAsFactors = T, na.strings = c('NA',''),drop = 'Gene Name')
+raw_counts <- raw_counts[complete.cases(raw_counts), ]
+
+cts <- as.matrix(raw_counts, rownames = 'Gene ID')
+df_to_compare_2 <- cts
+
+coldata <- fread('./E-MTAB-567-experiment-design.tsv', stringsAsFactors = T, na.strings = c('NA',''))
+colnames(coldata)[colnames(coldata) == 'Factor Value[sampling site]'] <- 'condition'
+colnames(coldata)[colnames(coldata) == 'Run'] <- 'sample_num'
+colnames(coldata)[colnames(coldata) == 'Sample Characteristic[age]'] <- 'patient_age'
+
+coldata <- coldata %>% remove_rownames %>% column_to_rownames(var="sample_num")
+coldata <- coldata[,c('condition','patient_age'),drop=FALSE]
+
+coldata <- coldata[order(coldata$condition,decreasing = TRUE),,drop=FALSE]
+
+#reorder count matrix by condition
+
+cts <-  cts[,rownames(coldata)]
+
+#test the cts matrix, the compare should be true
+library(janitor)
+compare_df_cols_same(as.data.frame(df_to_compare_2),as.data.frame(cts))
+
+
+#reorder coldata by cts
+#coldata <- coldata[colnames(cts),,drop=FALSE]
+
+levels(coldata$condition)
+levels(coldata$condition) <- c('healthy_prostate','prostate_cancer')
+```
+
+
+
+```{r,  echo=TRUE, warning=FALSE, message=FALSE}
+#analysis
+library("DESeq2")
+library("pheatmap")
+library("EnhancedVolcano")
+
+
+
+options(ggrepel.max.overlaps = Inf)
+
+dds <- DESeqDataSetFromMatrix(countData = cts,colData = coldata, design = ~ condition)
+dds <- dds[rowSums(counts(dds)) > 1,] #filtering out rows with no counts
+#performing differential expression analysis
+dds_analysis <- DESeq(dds)
+res <- results(dds_analysis)
+   
+   
+#emitting NAs
+res <- na.omit(res)
+   
+#volcano plot
+EnhancedVolcano(res,lab = rownames(res), x = 'log2FoldChange',y = 'pvalue',pCutoff = 1e-19, pointSize = 4.0,labSize = 4.0, labCol = 'black',labFace = 'bold', boxedLabels = FALSE, colAlpha = 4/5, legendPosition = 'right', legendLabSize = 14, legendIconSize = 4.0, drawConnectors = TRUE, widthConnectors = 1.0, colConnectors = 'black', title = 'Normal Vs PCa')
+   
+   
+#prepare for gene clustering
+rld <- rlog(dds,blind = FALSE)
+
+#padj<=0.0.5
+resSig <- subset(res, padj <= 0.05)
+top100 <- head(resSig[order(abs(resSig$log2FoldChange), decreasing = TRUE ),], 30)
+rld_100 <- rld[rownames(top100),drop=FALSE]
+scaled_mat <- scale(assay(rld_100))
+   
+annotation_col<-as.data.frame(coldata[,c("condition")],drop=F,row.names = rownames(coldata))
+pheatmap(scaled_mat,annotation_col=annotation_col,fontsize = 7, cluster_cols = TRUE)
+
+
+#padj<=0.1
+resSig <- subset(res, padj <= 0.1)
+top100 <- head(resSig[order(abs(resSig$log2FoldChange), decreasing = TRUE ),], 30)
+rld_100 <- rld[rownames(top100),drop=FALSE]
+scaled_mat <- scale(assay(rld_100))
+   
+annotation_col<-as.data.frame(coldata[,c("condition")],drop=F,row.names = rownames(coldata))
+pheatmap(scaled_mat,annotation_col=annotation_col,fontsize = 7, cluster_cols = TRUE)
+
+   
+#plotting pca
+plotPCA(rld_100, intgroup='condition')
+
+```
+
+
+```{r,  echo=TRUE, warning=FALSE, message=FALSE}
+#hierarchical clustering and K-means clustering
+
+library("Rtsne")
+library("factoextra")
+library("ggplot2")
+library("RColorBrewer")
+library("cluster")
+set.seed(555)
+
+expr <- cts
+tsne <- Rtsne(t(expr), perplexity = 9 )
+expr <- t(scale(na.omit(expr)))
+
+#rename_data <- rownames(expr)
+rename_data <- data.frame()
+for(item in rownames(coldata)){
+   if(coldata[item,'condition'] == 'healthy_prostate'){
+      cond_str <- 'NP'
+   }
+   else cond_str <- 'PC'
+   rename_data <- rbind(rename_data, paste(cond_str,item, sep = '_'))
+   rownames(rename_data)[nrow(rename_data)] <- item
+}
+rownames(expr) <- rename_data[rownames(expr),]
+
+d <- dist(expr, method = "euclidean")
+hc1 <- hclust(d, method = "complete")
+hc2 <- hclust(d, method = "single")
+hc3 <- hclust(d, method = "average")
+
+plot(hc1, cex=0.6, hang=-1)
+plot(hc2, cex=0.6, hang=-1)
+plot(hc3, cex=0.6, hang=-1)
+
+#kmeans clustering. trying to cluster cancer and healthy
+km.result1 <- kmeans(d, centers = 2, nstart = 25)
+fviz_cluster(km.result1, data = expr)
+
+#removing some samples to show better segregation
+
+expr <- cts
+unwanted_samples <- c('ERR031017','ERR031027','ERR031023','ERR031039','ERR031035')
+samples_to_take <- setdiff(colnames(expr),unwanted_samples)
+expr <- expr[,samples_to_take]
+expr <- t(scale(na.omit(expr)))
+rownames(expr) <- rename_data[rownames(expr),]
+d <- dist(expr, method = "euclidean")
+km.result2 <- kmeans(d, centers = 2, nstart = 25)
+fviz_cluster(km.result2, data = expr)
+```
+
